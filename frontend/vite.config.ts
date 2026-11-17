@@ -8,6 +8,8 @@ import tailwindcss from '@tailwindcss/vite'
 
 const config = defineConfig({
   resolve: { tsconfigPaths: true },
+  // In production the preview server only sits behind Caddy, which routes just the app's own domain to it
+  preview: { allowedHosts: true },
   plugins: [devtools(), tailwindcss(), tanstackStart({ importProtection: { server: { excludeFiles: ['**/services/api.client.ts'] } } }), viteReact()],
 })
 

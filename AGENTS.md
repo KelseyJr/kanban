@@ -18,6 +18,7 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
 │   └── support/              env.ts (reads root .env), urls.ts, api-fixtures.ts, build-unique-name.ts
 ├── docker/                   create-databases.sql (kanban_test, kanban_e2e)
 ├── docker-compose.yml        Postgres 18 for dev, tests and E2E
+├── infra/                    AWS study deployment (see infra/README.md): Terraform for one EC2, docker-compose.prod.yml + Caddyfile, deploy.sh; each app has its own Dockerfile
 ├── playwright.config.ts      starts the backend (port 3334, database kanban_e2e) and the frontend (port 3001), then runs e2e/
 ├── package.json              root: Playwright, concurrently and the cross-app scripts (`dev`, `test`, `test:e2e`)
 ├── .env.example              E2E_DATABASE_URL (copy to .env)

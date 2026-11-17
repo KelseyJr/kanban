@@ -1,0 +1,60 @@
+name: kanban
+
+services:
+  postgres:
+    image: postgres:18.7-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kanban
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: kanban
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kanban -d kanban"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  backend:
+    build: ../backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://kanban:${POSTGRES_PASSWORD}@postgres:5432/kanban
+      CORS_ORIGIN: ${APP_URL:?set APP_URL}
+      PORT: "3333"
+      LOG_LEVEL: info
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        VITE_API_URL: ${API_URL:?set API_URL}
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      APP_SITE: ${APP_SITE:?set APP_SITE}
+      API_SITE: ${API_SITE:?set API_SITE}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:
