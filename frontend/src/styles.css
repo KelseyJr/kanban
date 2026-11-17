@@ -1,5 +1,31 @@
-
 @import "tailwindcss";
+@import "@fontsource-variable/archivo/wdth.css";
+
+@theme {
+  --font-sans: "Archivo Variable", system-ui, sans-serif;
+
+  --color-postal: #f4c430;
+  --color-postal-deep: #d9a913;
+  --color-ink: #1c2e5a;
+  --color-ink-soft: #44506a;
+  --color-ink-faint: #6b7590;
+  --color-steel: #2b3440;
+  --color-steel-deep: #1d242c;
+  --color-steel-line: #55606e;
+  --color-steel-text: #c3cad4;
+  --color-frame: #d9dde2;
+  --color-paper: #ffffff;
+  --color-stamp: #c8322a;
+
+  --radius-slot: 6px;
+  --radius-envelope: 3px;
+
+  --shadow-envelope: 0 1px 2px rgb(29 36 44 / 0.35), 0 4px 10px -4px rgb(29 36 44 / 0.45);
+  --shadow-lifted: 0 10px 24px -6px rgb(29 36 44 / 0.6);
+  --shadow-slot: inset 0 6px 0 var(--color-steel-deep);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
 
 * {
   box-sizing: border-box;
@@ -13,5 +39,63 @@ body,
 
 body {
   margin: 0;
+  background: var(--color-frame);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
 }
 
+::selection {
+  background: var(--color-postal);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-postal);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--color-ink);
+}
+
+* {
+  scrollbar-color: var(--color-steel-line) transparent;
+  scrollbar-width: thin;
+}
+
+input,
+textarea {
+  caret-color: var(--color-stamp);
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+/* Tailwind 4 preflight resets buttons to the default cursor; base layer keeps cursor-* utilities able to override it */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+}
+
+@keyframes postmark-in {
+  from {
+    opacity: 0;
+    transform: rotate(-24deg) scale(1.6);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(-12deg) scale(1);
+    filter: blur(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "kanban",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend \"cd backend && bun run dev\" \"cd frontend && bun --bun run dev\"",
+    "test": "cd backend && bun run test && cd ../frontend && bun run test",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "concurrently": "10.0.7"
+  }
+}

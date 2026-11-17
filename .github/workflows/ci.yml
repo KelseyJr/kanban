@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.7-alpine
+        env:
+          POSTGRES_USER: kanban
+          POSTGRES_PASSWORD: kanban
+          POSTGRES_DB: kanban
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kanban -d kanban"
+          --health-interval 2s --health-timeout 5s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: PGPASSWORD=kanban psql -h localhost -U kanban -d kanban -f docker/create-databases.sql
+      - run: bun ci
+        working-directory: backend
+      - run: bun check && bun test
+        working-directory: backend
+      - run: bun ci
+        working-directory: frontend
+      - run: bun check && bun run test
+        working-directory: frontend
+
+  e2e:
+    needs: unit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.7-alpine
+        env:
+          POSTGRES_USER: kanban
+          POSTGRES_PASSWORD: kanban
+          POSTGRES_DB: kanban
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kanban -d kanban"
+          --health-interval 2s --health-timeout 5s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: PGPASSWORD=kanban psql -h localhost -U kanban -d kanban -f docker/create-databases.sql
+      - run: cp .env.example .env
+      - run: bun ci
+      - run: bun ci
+        working-directory: backend
+      - run: bun ci
+        working-directory: frontend
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:e2e

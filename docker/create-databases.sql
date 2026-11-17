@@ -1,0 +1,2 @@
+CREATE DATABASE kanban_test;
+CREATE DATABASE kanban_e2e;
