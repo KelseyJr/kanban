@@ -23,7 +23,6 @@
 - Imagens multi-arquitetura.
 - Deploy sem indisponibilidade: o Compose recria os containers, e cada deploy tem alguns segundos de 502.
 - Terraform no pipeline e estado remoto do Terraform.
-- Environments do GitHub com aprovação manual (seção D9).
 
 ## Decisions
 
@@ -168,12 +167,13 @@ O ponto de partida é `infra/terraform/` do PR #1, com estes recursos novos ou a
 | `aws_ecr_repository` × 2 (`kanban-backend`, `kanban-frontend`) | Tags imutáveis, scan no push e lifecycle que guarda as dez últimas imagens                                  |
 | Bucket S3 de releases                                          | Bloqueio de acesso público, criptografia SSE-S3 e expiração de `releases/` em 30 dias                      |
 | `aws_iam_openid_connect_provider` do GitHub                    | Um por conta AWS. Se a conta já tiver um, o README explica como importá-lo                                  |
-| Role `kanban-github-deploy`                                    | Confia só em `aud = sts.amazonaws.com` e `sub = repo:<owner>/<repo>:ref:refs/heads/main`. Pode fazer push e `DescribeImages` nos dois repositórios, `GetAuthorizationToken`, `s3:PutObject` em `releases/*`, `ssm:SendCommand` na instância e no documento `AWS-RunShellScript`, e `ssm:GetCommandInvocation` |
+| Role `kanban-github-publish`                                   | Confia só em `aud = sts.amazonaws.com` e `sub = repo:<owner>/<repo>:ref:refs/heads/main`. Pode fazer push e `DescribeImages` nos dois repositórios e `GetAuthorizationToken` |
+| Role `kanban-github-deploy`                                    | Confia só em `aud = sts.amazonaws.com` e `sub = repo:<owner>/<repo>:environment:production`. Pode fazer `s3:PutObject` em `releases/*`, `ssm:SendCommand` na instância e no documento `AWS-RunShellScript`, e `ssm:GetCommandInvocation` |
 | `user-data.sh`                                                 | Docker e o plugin Compose v2 (pacotes do Ubuntu) e AWS CLI v2. O agente do SSM já vem na AMI do Ubuntu. A swap do PR #1 sai, porque a instância não constrói mais imagens |
 
-- As saídas do Terraform viram variáveis do repositório no GitHub: `AWS_REGION`, `AWS_ROLE_ARN`, `ECR_REGISTRY`, `RELEASES_BUCKET` e `INSTANCE_ID`, além de `DEPLOY_ENABLED`, definida à mão. São identificadores, não segredos, e o README traz os comandos `gh variable set`. A exceção é `APP_DOMAIN`, gravado como secret do repositório (`gh secret set`): o domínio contém o IP, os logs são públicos e o GitHub só mascara secrets. Uma variável mascarada com `::add-mask::` ainda apareceria no cabeçalho de `env` do passo que registra a máscara.
+- As saídas do Terraform viram variáveis do repositório no GitHub: `AWS_REGION`, `AWS_PUBLISH_ROLE_ARN`, `AWS_DEPLOY_ROLE_ARN`, `ECR_REGISTRY`, `RELEASES_BUCKET` e `INSTANCE_ID`, além de `DEPLOY_ENABLED`, definida à mão. São identificadores, não segredos, e o README traz os comandos `gh variable set`. A exceção é `APP_DOMAIN`, gravado como secret do repositório (`gh secret set`): o domínio contém o IP, os logs são públicos e o GitHub só mascara secrets. Uma variável mascarada com `::add-mask::` ainda apareceria no cabeçalho de `env` do passo que registra a máscara.
 - O estado do Terraform continua local e fora do git, como no PR #1. `.terraform.lock.hcl` vai para o git.
-- **Sem Environments do GitHub**: em repositório privado, eles dependem de plano pago. Restringir o `sub` do OIDC à `main` dá a mesma garantia de "só a `main` implanta" em qualquer plano. Se o plano permitir, o reforço opcional é um environment `production` com revisão obrigatória, trocando o `sub` para `repo:<owner>/<repo>:environment:production`. O README descreve esse caminho.
+- **Environment `production` e proteção da `main`**: em repositório público, os dois são gratuitos. O job `deploy` roda no environment `production`, que pede aprovação antes de começar e só aceita branches protegidas; a `main` exige os checks do pipeline antes do merge. O acesso à AWS fica em dois roles: `publish` confia na `main`, e `deploy` só no environment, então só um job aprovado alcança o S3 e o SSM. Um role só, com os dois jobs no environment, pediria duas aprovações por execução; juntar `publish` e `deploy` num job quebraria o rollback manual, porque reexecutar uma execução antiga exigiria os artifacts das imagens, que expiram em 1 dia.
 
 ### D10. Concorrência
 
@@ -224,4 +224,3 @@ A `release` é renomeada para `main` pela API do GitHub (`gh api -X POST repos/<
 ## Open Questions
 
 - O formato de hash que o `basic_auth` do Caddy 2.10 aceita (bcrypt puro ou em base64) é conferido na implementação, pelo drill. A resposta não muda a abordagem.
-- Se o plano do GitHub permitir, vale ligar a proteção da `main` (status checks obrigatórios) e o environment `production` (D9). Isso é reforço opcional, documentado no README, fora das tarefas.

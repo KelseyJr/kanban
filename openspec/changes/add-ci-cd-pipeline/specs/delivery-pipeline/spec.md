@@ -121,6 +121,20 @@ O pipeline SHALL acessar a nuvem com credenciais temporárias emitidas para cada
 - **WHEN** uma execução que não é da `main` tenta obter credenciais da nuvem
 - **THEN** a nuvem recusa as credenciais
 
+### Requirement: Aprovação antes do deploy
+
+Todo deploy em produção SHALL esperar a aprovação de um revisor do repositório. Sem a aprovação, a produção SHALL NOT mudar, e as credenciais que alteram a produção SHALL NOT ser emitidas.
+
+#### Scenario: Deploy aguardando aprovação
+
+- **WHEN** as imagens de um commit da `main` são publicadas
+- **THEN** o deploy espera a aprovação de um revisor antes de começar
+
+#### Scenario: Deploy rejeitado
+
+- **WHEN** o revisor rejeita o deploy
+- **THEN** a produção continua servindo a versão anterior
+
 ### Requirement: Deploy desligado sem produção configurada
 
 Quando o operador desliga o deploy (por exemplo, depois de destruir a infra), o pipeline da `main` SHALL rodar só as verificações e SHALL informar no resumo da execução que a publicação e o deploy foram pulados, sem ficar reprovado por isso.

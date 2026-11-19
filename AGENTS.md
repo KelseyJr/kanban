@@ -11,7 +11,7 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
 │   ├── skills/               skills (openspec, impeccable)
 │   └── agents/               subagent definitions
 ├── .claude/                  symlinks only: skills, agents and rules → ../.agents/*
-├── .github/workflows/        pipeline.yml: on every pull request and push on `main` (the production branch), jobs backend, frontend, infra, images (ARM64), e2e and release-drill; on `main` with the repository variable DEPLOY_ENABLED=true, publish (ECR) and deploy (EC2), otherwise deploy-skipped
+├── .github/workflows/        pipeline.yml: on every pull request and push on `main` (the production branch), jobs backend, frontend, infra, images (ARM64), e2e and release-drill; on `main` with the repository variable DEPLOY_ENABLED=true, publish (ECR) and deploy (EC2, after an approval in the `production` environment), otherwise deploy-skipped. `main` is protected: it takes those checks before a merge
 ├── e2e/                      Playwright suite, run against both apps
 │   ├── api/                  one `<action>.e2e-spec.ts` per backend route (status codes, payloads, error bodies)
 │   ├── flows/                one `<flow>.e2e-spec.ts` per user flow, in the browser
@@ -19,7 +19,7 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
 ├── docker/                   create-databases.sql (kanban_test, kanban_e2e)
 ├── docker-compose.yml        Postgres 18 for dev, tests and E2E
 ├── infra/                    AWS deployment, operated through infra/README.md
-│   ├── terraform/            EC2 (t4g.small) + Elastic IP, ECR repositories, releases bucket, GitHub OIDC deploy role; state stays local and out of git
+│   ├── terraform/            EC2 (t4g.small) + Elastic IP, ECR repositories, releases bucket, GitHub OIDC publish and deploy roles; state stays local and out of git
 │   ├── release/              bundle each deploy sends to the instance: production compose, Caddyfile, apply-release.sh (+ its drill, apply-release.spec.sh), run-release.sh
 │   └── docker-compose.e2e.yml  override that publishes the backend on 3334 for the E2E suite in stack mode
 ├── playwright.config.ts      starts the backend (port 3334, database kanban_e2e) and the frontend (port 3001), then runs e2e/

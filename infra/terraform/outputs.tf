@@ -2,7 +2,11 @@ output "aws_region" {
   value = var.region
 }
 
-output "aws_role_arn" {
+output "aws_publish_role_arn" {
+  value = aws_iam_role.github_publish.arn
+}
+
+output "aws_deploy_role_arn" {
   value = aws_iam_role.github_deploy.arn
 }
 

@@ -4,10 +4,12 @@ A study deployment: one EC2 instance runs the whole app with Docker Compose, and
 
 ```
 GitHub Actions (push on main)
-  ├─ OIDC ──► role kanban-github-deploy (only main of this repository)
-  ├─ docker push ──► ECR kanban-backend, kanban-frontend   (tag: commit SHA)
-  ├─ aws s3 cp infra/release ──► S3 kanban-releases-*/releases/<sha>/
-  └─ ssm send-command ──► EC2: download the bundle, run-release.sh
+  ├─ publish: OIDC ──► role kanban-github-publish (only main of this repository)
+  │    └─ docker push ──► ECR kanban-backend, kanban-frontend   (tag: commit SHA)
+  └─ deploy, after an approval in the production environment:
+       OIDC ──► role kanban-github-deploy (only the production environment of this repository)
+       ├─ aws s3 cp infra/release ──► S3 kanban-releases-*/releases/<sha>/
+       └─ ssm send-command ──► EC2: download the bundle, run-release.sh
 
 Internet ──► Elastic IP ──► EC2 t4g.small (Ubuntu 24.04, arm64)
                               └─ docker compose, project "kanban" (infra/release/docker-compose.yml)
@@ -18,7 +20,7 @@ Internet ──► Elastic IP ──► EC2 t4g.small (Ubuntu 24.04, arm64)
                                    └─ postgres (volume postgres-data, no published port)
 ```
 
-- `terraform/` creates everything on AWS: key pair, security group (22 from your IP only, 80 and 443 open), instance with its IAM role, Elastic IP, the two ECR repositories, the releases bucket, the GitHub OIDC provider and the deploy role.
+- `terraform/` creates everything on AWS: key pair, security group (22 from your IP only, 80 and 443 open), instance with its IAM role, Elastic IP, the two ECR repositories, the releases bucket, the GitHub OIDC provider, the publish role and the deploy role.
 - [sslip.io](https://sslip.io) turns the IP into a hostname (`kanban.1-2-3-4.sslip.io` → `1.2.3.4`), so no domain is needed and Caddy still gets a real certificate.
 - The pipeline builds the images once, tests them, then pushes those same images to ECR. The instance pulls them with its own role: no registry token and no AWS key live on GitHub or on the instance.
 - The backend container applies pending migrations before it starts serving. `POSTGRES_PASSWORD` is generated on the first deploy and kept in `/opt/kanban/.env` on the instance.
@@ -71,16 +73,16 @@ unset BASIC_AUTH_PASSWORD
 
 ### Repository variables
 
-The pipeline reads the Terraform outputs as repository variables. They are identifiers, not secrets: the role only trusts runs on `main` of this repository. The exception is `APP_DOMAIN`, a repository secret: the domain carries the instance IP, and only secrets are masked in the logs, which are public in this repository.
+The pipeline reads the Terraform outputs as repository variables. They are identifiers, not secrets: the publish role only trusts runs on `main` of this repository, and the deploy role only the `production` environment. The exception is `APP_DOMAIN`, a repository secret: the domain carries the instance IP, and only secrets are masked in the logs, which are public in this repository.
 
 ```bash
 cd infra/terraform
-for output in aws_region aws_role_arn ecr_registry releases_bucket instance_id; do
+for output in aws_region aws_publish_role_arn aws_deploy_role_arn ecr_registry releases_bucket instance_id; do
   gh variable set "$(echo "$output" | tr '[:lower:]' '[:upper:]')" --body "$(terraform output -raw "$output")"
 done
 gh secret set APP_DOMAIN --body "$(terraform output -raw app_domain)"
 gh variable set DEPLOY_ENABLED --body true
-gh variable list   # AWS_REGION, AWS_ROLE_ARN, ECR_REGISTRY, RELEASES_BUCKET, INSTANCE_ID, DEPLOY_ENABLED
+gh variable list   # AWS_REGION, AWS_PUBLISH_ROLE_ARN, AWS_DEPLOY_ROLE_ARN, ECR_REGISTRY, RELEASES_BUCKET, INSTANCE_ID, DEPLOY_ENABLED
 gh secret list     # APP_DOMAIN
 ```
 
@@ -123,12 +125,36 @@ This deletes the instance, its disk (and the database with it), the Elastic IP, 
 - **Let's Encrypt rate limits on `sslip.io`**: certificates live in the `caddy-data` volume and survive deploys. If the limit is hit, point Caddy at the staging CA (`acme_ca https://acme-staging-v02.api.letsencrypt.org/directory` in a global options block of the Caddyfile) until it resets.
 - **Compose `--wait`** needs Compose v2; Ubuntu 24.04's `docker-compose-v2` package has it. Check with `docker compose version` on the first deploy.
 
-### Optional hardening
+### GitHub protection
 
-Both are free on a public repository:
+Both are free on a public repository, and both already exist on this one. To recreate them:
 
-- **Protect `main`**: require the pipeline's checks (`backend`, `frontend`, `infra`, `e2e`, `release-drill`) before merging.
-- **A `production` environment with required reviewers**: add `environment: production` to the `publish` and `deploy` jobs, and change the trust of the deploy role to `sub = repo:<owner>/<repo>:environment:production` in `terraform/github-oidc.tf`. Each deploy then waits for an approval.
+- **`main` is protected**: changes reach it through pull requests whose checks passed (`backend`, `frontend`, `infra`, `images (backend)`, `images (frontend)`, `e2e`, `release-drill`).
+
+  ```bash
+  gh api -X PUT repos/{owner}/{repo}/branches/main/protection --input - <<'JSON'
+  {
+    "required_status_checks": {
+      "strict": false,
+      "contexts": ["backend", "frontend", "infra", "images (backend)", "images (frontend)", "e2e", "release-drill"]
+    },
+    "enforce_admins": false,
+    "required_pull_request_reviews": null,
+    "restrictions": null
+  }
+  JSON
+  ```
+
+- **The `production` environment asks for an approval** before each `deploy` job, and only protected branches can deploy to it. The deploy role trusts `sub = repo:<owner>/<repo>:environment:production` and nothing else, so no other job can reach S3 or SSM.
+
+  ```bash
+  gh api -X PUT repos/{owner}/{repo}/environments/production --input - <<JSON
+  {
+    "reviewers": [{ "type": "User", "id": $(gh api user --jq .id) }],
+    "deployment_branch_policy": { "protected_branches": true, "custom_branch_policies": false }
+  }
+  JSON
+  ```
 
 ## Pipeline
 
@@ -143,10 +169,11 @@ Both are free on a public repository:
 | `e2e`            | pull requests and `main`, ARM64       | Loads the images, brings the stack up with `apply-release.sh` and runs Playwright with `E2E_TARGET=stack`     |
 | `release-drill`  | pull requests and `main`, ARM64       | Loads the images and runs `apply-release.spec.sh`                                                             |
 | `publish`        | `main` with `DEPLOY_ENABLED=true`     | Pushes the tested images to ECR, tagged with the commit SHA, unless the tag is already there; image IDs in the run summary |
-| `deploy`         | after `publish`                       | Uploads `infra/release/` to S3, runs `run-release.sh` on the instance through SSM, then checks `/api/health` (200) and `/` (401) from the internet |
+| `deploy`         | after `publish` and an approval       | Uploads `infra/release/` to S3, runs `run-release.sh` on the instance through SSM, then checks `/api/health` (200) and `/` (401) from the internet |
 | `deploy-skipped` | `main` without `DEPLOY_ENABLED=true`  | Notes in the run summary that publish and deploy were skipped                                                 |
 
-- A pull request never gets AWS credentials: only `publish` and `deploy` ask for an OIDC token, and they only run on pushes on `main`. The deploy role also trusts nothing but `main` of this repository.
+- A pull request never gets AWS credentials: only `publish` and `deploy` ask for an OIDC token, and they only run on pushes on `main`. The publish role trusts only `main` of this repository, and the deploy role only its `production` environment.
+- `deploy` waits for an approval in the `production` environment: open the run and choose "Review deployments". Re-running an old `deploy` for a manual rollback asks for one too.
 - On `main`, runs go one at a time and only the newest push waits in line; on a pull request, a new push cancels the previous run.
 
 ### Reading a failed deploy
