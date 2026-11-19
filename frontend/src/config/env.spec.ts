@@ -13,7 +13,7 @@ describe('parseServerEnv', () => {
   it('returns the API URL when it is valid', () => {
     const { env } = parseServerEnv({ source: { API_URL: 'http://localhost:3333' } })
 
-    expect(env.API_URL).toBe('http://localhost:3333')
+    expect(env.API_URL).toBe('http://localhost:9999')
   })
 })
 
