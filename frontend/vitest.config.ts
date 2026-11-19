@@ -13,7 +13,7 @@ export default defineConfig({
     setupFiles: ['./src/test/setup-tests.ts'],
     restoreMocks: true,
     unstubGlobals: true,
-    env: { VITE_API_URL: 'http://api.test' },
+    env: { API_URL: 'http://api.test' },
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],

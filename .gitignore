@@ -7,3 +7,7 @@ node_modules
 test-results/
 playwright-report/
 coverage/
+infra/terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars

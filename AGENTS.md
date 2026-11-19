@@ -11,16 +11,20 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
 │   ├── skills/               skills (openspec, impeccable)
 │   └── agents/               subagent definitions
 ├── .claude/                  symlinks only: skills, agents and rules → ../.agents/*
-├── .github/workflows/        CI: each app's typecheck and unit suite, then E2E
+├── .github/workflows/        pipeline.yml: on every pull request and push on `main` (the production branch), jobs backend, frontend, infra, images (ARM64), e2e and release-drill; on `main` with the repository variable DEPLOY_ENABLED=true, publish (ECR) and deploy (EC2), otherwise deploy-skipped
 ├── e2e/                      Playwright suite, run against both apps
 │   ├── api/                  one `<action>.e2e-spec.ts` per backend route (status codes, payloads, error bodies)
 │   ├── flows/                one `<flow>.e2e-spec.ts` per user flow, in the browser
-│   └── support/              env.ts (reads root .env), urls.ts, api-fixtures.ts, build-unique-name.ts
+│   └── support/              env.ts (reads root .env and E2E_TARGET), urls.ts, api-fixtures.ts, build-unique-name.ts
 ├── docker/                   create-databases.sql (kanban_test, kanban_e2e)
 ├── docker-compose.yml        Postgres 18 for dev, tests and E2E
+├── infra/                    AWS deployment, operated through infra/README.md
+│   ├── terraform/            EC2 (t4g.small) + Elastic IP, ECR repositories, releases bucket, GitHub OIDC deploy role; state stays local and out of git
+│   ├── release/              bundle each deploy sends to the instance: production compose, Caddyfile, apply-release.sh (+ its drill, apply-release.spec.sh), run-release.sh
+│   └── docker-compose.e2e.yml  override that publishes the backend on 3334 for the E2E suite in stack mode
 ├── playwright.config.ts      starts the backend (port 3334, database kanban_e2e) and the frontend (port 3001), then runs e2e/
 ├── package.json              root: Playwright, concurrently and the cross-app scripts (`dev`, `test`, `test:e2e`)
-├── .env.example              E2E_DATABASE_URL (copy to .env)
+├── .env.example              E2E_DATABASE_URL, plus the optional E2E_TARGET and stack credentials (copy to .env)
 ├── bunfig.toml               root Bun config: exact versions, release age gate
 ├── PRODUCT.md                product context used by the impeccable skill
 ├── backend/                  HTTP API (layers: controller → use case → repository interface → provider)
@@ -34,6 +38,7 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
 │   ├── drizzle/              generated SQL migrations (committed; never edit by hand)
 │   ├── drizzle.config.ts     drizzle-kit config
 │   ├── .env.example / .env.test  env template / committed test env pointing at kanban_test
+│   ├── Dockerfile / .dockerignore  production image: applies the migrations, then starts the server (`--no-env-file`)
 │   └── bunfig.toml           Bun config: exact versions, release age gate, test runner
 └── frontend/                 web UI (view → hook → service → backend API)
     ├── src/routes/           thin file-based routes: __root.tsx is the HTML shell, index.tsx is `/`, projects.$projectId.tsx is the board
@@ -42,7 +47,7 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
     ├── src/hooks/            one folder per hook: queries, mutations, forms, drag and drop
     ├── src/services/         api.client.ts (fetch + timeout + ApiError) and one folder per resource (`projects/`, `cards/`)
     ├── src/types/            zod schemas and types of the API responses (nothing is imported from backend/)
-    ├── src/config/env.ts     validated VITE_API_URL
+    ├── src/config/env.ts     getApiBaseUrl: `/api` in the browser, validated API_URL in SSR
     ├── src/lib/              validate-field.ts, shared by the form hooks
     ├── src/test/             test helpers (renderWithProviders, stubApi, setupQueryHook, setup)
     ├── src/router.tsx        router factory (`getRouter`)
@@ -50,7 +55,8 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
     ├── src/styles.css        Tailwind entry
     ├── vite.config.ts        plugins: TanStack Start, React, Tailwind, devtools
     ├── vitest.config.ts      test runner: jsdom, coverage thresholds, aliases
-    ├── .env.example          VITE_API_URL (copy to .env)
+    ├── .env.example          API_URL: backend URL for SSR and the dev proxy of `/api` (copy to .env)
+    ├── Dockerfile / .dockerignore  production image: build once, `vite preview` reads API_URL when the container starts
     └── bunfig.toml           Bun config: exact versions, release age gate
 ```
 
@@ -82,11 +88,14 @@ Both apps use Bun as package manager.
 | Unit tests           | `bun test`                                                 | `bun run test` (Vitest with coverage)                             |
 | Build                | none: Bun runs `src/main/server.ts` as is                        | `bun --bun run build` → `dist/client/` and `dist/server/server.js` |
 | Run the build        | `bun --no-env-file src/main/server.ts` (platform env vars only)  | `bun --bun run preview`                                           |
+| Build the image      | from the repo root: `docker build -t kanban-backend:local backend` | from the repo root: `docker build -t kanban-frontend:local frontend` (no build args) |
+| Run the image        | `docker run --rm --network kanban_default -p 3333:3333 -e DATABASE_URL=postgres://kanban:kanban@postgres:5432/kanban -e CORS_ORIGIN=http://localhost:3000 --name kanban-backend kanban-backend:local` (Postgres from the root compose) | `docker run --rm --network kanban_default -p 3000:3000 -e API_URL=http://kanban-backend:3333 kanban-frontend:local` |
 
 E2E runs from the repository root: `bun install` (root), `cp .env.example .env`, `bunx playwright install chromium` (once), then `bun run test:e2e`. It needs Docker with Postgres up (`docker compose up -d` at the root) and the dependencies of both apps installed; Playwright starts both apps itself, on ports 3334 and 3001, so it does not collide with the dev servers.
 
 To run the whole project, start Postgres (`docker compose up -d` at the root), apply the migrations in `backend/`, then run `bun run dev` at the root (or start both dev servers in separate terminals): the UI at http://localhost:3000, the API at http://localhost:3333.
 
+- Migrations only add (nullable columns, new tables, new indexes): a failed deploy rolls back the images but not the schema, so the previous backend must still run on the new one. Drop or rename in a later change. See "Migrations only add" in `infra/README.md`.
 - Dependency versions are exact (`"elysia": "1.4.32"`). `bunfig.toml` sets `exact = true`, so `bun add` writes them that way.
 - Add or change a page by editing files in `frontend/src/routes/`. The TanStack Router plugin rewrites `src/routeTree.gen.ts` on the next `dev` or `build`.
 
@@ -95,8 +104,10 @@ To run the whole project, start Postgres (`docker compose up -d` at the root), a
 Each unit spec sits next to the file it tests, as `<file>.spec.ts` (`.spec.tsx` for components).
 
 - **Backend**: `bun test`, importing from `bun:test`; coverage threshold goes in `bunfig.toml` under `[test]`. Requires Docker: run `docker compose up -d` at the repo root first. Bun loads `.env.test`, and the preload migrates `kanban_test`; integration specs call `resetDatabase()` in `beforeEach`.
-- **Frontend**: Vitest + jsdom + Testing Library, configured in `vitest.config.ts` (separate from `vite.config.ts`; 80% threshold on lines, branches and functions). Run it with `bun run test`: plain `bun test` starts Bun's own runner instead of Vitest. Mount components with `renderWithProviders` (`src/test/render-with-providers.tsx`: QueryClient without retries and an in-memory router) and fake the API with `stubApi` (`src/test/fetch-stub.ts`) instead of MSW. Tests see `VITE_API_URL=http://api.test`.
-- **E2E**: Playwright, in the root `e2e/` folder: `e2e/api/<action>.e2e-spec.ts` per backend route and `e2e/flows/<flow>.e2e-spec.ts` per user flow. Run `bun run test:e2e` from the root, with Docker up. The backend uses `kanban_e2e`, migrated on start; each spec creates its own project with a unique name, so specs stay independent without cleanup. Wait for `networkidle` after each full page load: the pages are server-rendered and controls only work once React hydrates.
+- **Frontend**: Vitest + jsdom + Testing Library, configured in `vitest.config.ts` (separate from `vite.config.ts`; 80% threshold on lines, branches and functions). Run it with `bun run test`: plain `bun test` starts Bun's own runner instead of Vitest. Mount components with `renderWithProviders` (`src/test/render-with-providers.tsx`: QueryClient without retries and an in-memory router) and fake the API with `stubApi` (`src/test/fetch-stub.ts`) instead of MSW. Tests see `API_URL=http://api.test`: without the TanStack Start compiler, `getApiBaseUrl` runs its server branch, so request URLs start with `http://api.test`.
+- **E2E**: Playwright, in the root `e2e/` folder: `e2e/api/<action>.e2e-spec.ts` per backend route and `e2e/flows/<flow>.e2e-spec.ts` per user flow. Run `bun run test:e2e` from the root, with Docker up. The backend uses `kanban_e2e`, migrated on start; each spec creates its own project with a unique name, so specs stay independent without cleanup. Wait for `networkidle` after each full page load: the pages are server-rendered and controls only work once React hydrates. `E2E_TARGET` picks what the suite runs against:
+  - `local` (default): Playwright starts the backend and the frontend dev server itself. Needs `E2E_DATABASE_URL`.
+  - `stack`: Playwright starts nothing and tests the release stack already up on ports 3001 (Caddy, with basic auth) and 3334 (the backend, through `infra/docker-compose.e2e.yml`). Needs `E2E_BASIC_AUTH_USER` and `E2E_BASIC_AUTH_PASSWORD`, sent by the `flows` project. `e2e/flows/access-protection.e2e-spec.ts` only runs in this mode. Bring the stack up as in "Run the stack locally" in `infra/README.md` (user `admin`, password `secret`), then run `E2E_TARGET=stack E2E_BASIC_AUTH_USER=admin E2E_BASIC_AUTH_PASSWORD=secret bun run test:e2e`.
 
 ## Rules
 
@@ -112,6 +123,8 @@ The rules below are mandatory for all code, specs and test helpers included. Bef
 | New, moved or renamed files and folders in `backend/`                                     | [backend-folder-structure.md](.agents/rules/backend-folder-structure.md)                   |
 | New, moved or renamed files and folders in `frontend/`                                    | [frontend-folder-structure.md](.agents/rules/frontend-folder-structure.md)                 |
 | New files or folders at the repo root, E2E specs, a changed request or response shape, or deciding which app owns a piece of code | [fullstack-folder-structure.md](.agents/rules/fullstack-folder-structure.md) |
+
+The frontend reaches the API on its own origin, under `/api`, instead of calling `VITE_API_URL` directly with CORS as `fullstack-folder-structure.md` §3 describes: the browser calls `/api` (the Vite proxy in dev and preview, Caddy in production), and the SSR calls the backend at `API_URL`, read when the server starts. That way one frontend image serves every environment, and the basic auth in front of production also covers the API calls, which browsers would not send cross-origin. The backend keeps `CORS_ORIGIN`, now unused but harmless.
 
 [node-standards.md](.agents/rules/node-standards.md) covers Node.js backends. This backend runs on Bun, so `bun-standards.md` governs it.
 

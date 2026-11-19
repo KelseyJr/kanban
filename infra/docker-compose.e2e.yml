@@ -1,0 +1,5 @@
+# Publishes the backend on the E2E API port, so the Playwright `api` project and fixtures reach it directly
+services:
+  backend:
+    ports:
+      - "3334:3333"

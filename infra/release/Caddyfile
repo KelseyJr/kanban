@@ -1,0 +1,17 @@
+{$APP_SITE} {
+	encode zstd gzip
+
+	# The deploy pipeline checks /api/health from the internet without credentials
+	@protected not path /api/health
+	basic_auth @protected {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	handle_path /api/* {
+		reverse_proxy backend:3333
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

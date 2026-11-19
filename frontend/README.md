@@ -6,8 +6,17 @@ To run this application:
 
 ```bash
 bun install
+cp .env.example .env
 bun --bun run dev
 ```
+
+## Environment
+
+| Variable  | Example                 | Read by                                                                                   |
+| --------- | ----------------------- | ----------------------------------------------------------------------------------------- |
+| `API_URL` | `http://localhost:3333` | The SSR, when it calls the backend, and the `/api` proxy of `vite dev` and `vite preview` |
+
+The browser never calls `API_URL`: it calls `/api` on the app's own origin, which the Vite proxy (dev and preview) or Caddy (production) forwards to the backend without the `/api` prefix. `vite build` does not read `API_URL`, so one build serves every environment; `vite dev` and `vite preview` fail at startup without it.
 
 # Building For Production
 
