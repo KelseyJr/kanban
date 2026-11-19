@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { env } from '@/config/env'
+import { getApiBaseUrl } from '@/config/env'
 import { ApiError, CLIENT_ERROR_CODE } from './api-error'
 
 const REQUEST_TIMEOUT_IN_MS = 10_000
@@ -56,7 +56,7 @@ async function sendRequest({ path, method, body }: SendRequestParams): Promise<R
   const hasBody = body !== undefined
 
   try {
-    return await fetch(`${env.VITE_API_URL}${path}`, {
+    return await fetch(`${getApiBaseUrl()}${path}`, {
       method,
       headers: hasBody ? { 'content-type': 'application/json' } : undefined,
       body: hasBody ? JSON.stringify(body) : undefined,

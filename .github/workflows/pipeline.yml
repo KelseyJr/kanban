@@ -1,0 +1,327 @@
+name: Pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# main: one run at a time, and only the newest push waits in line, so production never goes back to an older commit.
+# Pull requests: a new push cancels the previous run of the same pull request.
+concurrency:
+  group: ${{ github.event_name == 'push' && 'pipeline-main' || format('pipeline-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.4.4
+  TERRAFORM_VERSION: 1.13.3
+  CADDY_IMAGE: caddy:2.10.2-alpine
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.7-alpine
+        env:
+          POSTGRES_USER: kanban
+          POSTGRES_PASSWORD: kanban
+          POSTGRES_DB: kanban
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kanban -d kanban"
+          --health-interval 2s --health-timeout 5s --health-retries 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: PGPASSWORD=kanban psql -h localhost -U kanban -d kanban -f ../docker/create-databases.sql
+      - run: bun ci
+      - run: bun check
+      - run: bun test
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun ci
+      - run: bun check
+      - run: bun run test
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - run: terraform fmt -check -recursive
+        working-directory: infra/terraform
+      - run: terraform init -backend=false -input=false
+        working-directory: infra/terraform
+      - run: terraform validate
+        working-directory: infra/terraform
+      - run: shellcheck infra/release/*.sh infra/terraform/user-data.sh
+
+  # Builds each image once; e2e, release-drill and publish all load these same files, so the image ID never changes
+  images:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      matrix:
+        app: [backend, frontend]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.app }}
+          platforms: linux/arm64
+          tags: kanban-${{ matrix.app }}:${{ github.sha }}
+          load: true
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+      - name: Save the image
+        run: docker save "kanban-${{ matrix.app }}:${{ github.sha }}" | gzip > "${{ runner.temp }}/kanban-${{ matrix.app }}.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.app }}
+          path: ${{ runner.temp }}/kanban-${{ matrix.app }}.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  e2e:
+    needs: images
+    runs-on: ubuntu-24.04-arm
+    env:
+      BACKEND_IMAGE: kanban-backend:${{ github.sha }}
+      FRONTEND_IMAGE: kanban-frontend:${{ github.sha }}
+      E2E_TARGET: stack
+      E2E_BASIC_AUTH_USER: e2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+      - name: Load the images
+        run: for image in "${{ runner.temp }}"/images/*.tar.gz; do gunzip -c "$image" | docker load; done
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun ci
+      - run: bunx playwright install --with-deps chromium
+      - name: Generate basic auth credentials
+        run: |
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::$password"
+          echo "E2E_BASIC_AUTH_PASSWORD=$password" >> "$GITHUB_ENV"
+          echo "BASIC_AUTH_HASH=$(docker run --rm "$CADDY_IMAGE" caddy hash-password --plaintext "$password")" >> "$GITHUB_ENV"
+      - name: Start the stack
+        run: infra/release/apply-release.sh
+        env:
+          RELEASE_ID: ${{ github.sha }}
+          STATE_DIR: ${{ runner.temp }}/kanban-stack
+          APP_SITE: ":80"
+          APP_URL: http://localhost:3001
+          BASIC_AUTH_USER: ${{ env.E2E_BASIC_AUTH_USER }}
+          HTTP_PORT: "3001"
+          HTTPS_PORT: "3443"
+          COMPOSE_OVERRIDE_FILE: infra/docker-compose.e2e.yml
+      - run: bun run test:e2e
+      - name: Collect the stack logs
+        if: failure()
+        run: |
+          mkdir -p "${{ runner.temp }}/stack-logs"
+          for container in $(docker ps -aq --filter label=com.docker.compose.project=kanban); do
+            name="$(docker inspect --format '{{.Name}}' "$container" | tr -d /)"
+            docker logs "$container" > "${{ runner.temp }}/stack-logs/$name.log" 2>&1
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: e2e-report
+          path: |
+            playwright-report/
+            ${{ runner.temp }}/stack-logs/
+          retention-days: 7
+
+  release-drill:
+    needs: images
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+      - name: Load the images
+        run: for image in "${{ runner.temp }}"/images/*.tar.gz; do gunzip -c "$image" | docker load; done
+      - run: bash infra/release/apply-release.spec.sh
+        env:
+          BACKEND_IMAGE: kanban-backend:${{ github.sha }}
+          FRONTEND_IMAGE: kanban-frontend:${{ github.sha }}
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    needs: [backend, frontend, infra, e2e, release-drill]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Log in to ECR
+        run: aws ecr get-login-password | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - name: Push the tested images
+        run: |
+          {
+            echo "### Images of ${GITHUB_SHA}"
+            echo
+            echo "| Repository | Image ID | ECR |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for app in backend frontend; do
+            local_image="kanban-${app}:${GITHUB_SHA}"
+            remote_image="${ECR_REGISTRY}/kanban-${app}:${GITHUB_SHA}"
+            gunzip -c "${{ runner.temp }}/images/kanban-${app}.tar.gz" | docker load
+            image_id="$(docker image inspect --format '{{.Id}}' "$local_image")"
+
+            if aws ecr describe-images --repository-name "kanban-${app}" --image-ids "imageTag=${GITHUB_SHA}" > /dev/null 2>&1; then
+              status="already there, kept"
+            else
+              docker tag "$local_image" "$remote_image"
+              docker push "$remote_image"
+              status="pushed"
+            fi
+
+            echo "| kanban-${app} | \`${image_id}\` | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  # The production environment asks for an approval before this job starts, and the deploy role trusts only it
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASES_BUCKET: ${{ vars.RELEASES_BUCKET }}
+      INSTANCE_ID: ${{ vars.INSTANCE_ID }}
+      ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+      # A secret, so GitHub masks it: the domain carries the instance IP, and the logs of this repository are public
+      APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
+      COMMAND_TIMEOUT_IN_SECONDS: 600
+      POLL_INTERVAL_IN_SECONDS: 5
+      HEALTH_CHECK_DEADLINE_IN_SECONDS: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Upload the release bundle
+        run: aws s3 cp --recursive --exclude "*.spec.sh" infra/release "s3://${RELEASES_BUCKET}/releases/${GITHUB_SHA}/"
+      - name: Run the release on the instance
+        run: |
+          bundle_dir="/opt/kanban/releases/${GITHUB_SHA}"
+          parameters="$(jq -n \
+            --arg bundle_dir "$bundle_dir" \
+            --arg bundle_url "s3://${RELEASES_BUCKET}/releases/${GITHUB_SHA}/" \
+            --arg release "RELEASE_ID=${GITHUB_SHA} AWS_REGION=${AWS_REGION} ECR_REGISTRY=${ECR_REGISTRY} APP_DOMAIN=${APP_DOMAIN}" \
+            --arg timeout "$COMMAND_TIMEOUT_IN_SECONDS" \
+            '{
+              executionTimeout: [$timeout],
+              commands: [
+                "set -eu",
+                "mkdir -p \($bundle_dir)",
+                "aws s3 cp --recursive \($bundle_url) \($bundle_dir)/",
+                "chmod +x \($bundle_dir)/*.sh",
+                "\($release) \($bundle_dir)/run-release.sh"
+              ]
+            }')"
+
+          command_id="$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --instance-ids "$INSTANCE_ID" \
+            --timeout-seconds "$COMMAND_TIMEOUT_IN_SECONDS" \
+            --comment "kanban ${GITHUB_SHA}" \
+            --parameters "$parameters" \
+            --query Command.CommandId --output text)"
+          echo "SSM command ${command_id}"
+
+          deadline=$((SECONDS + COMMAND_TIMEOUT_IN_SECONDS))
+          status=Pending
+          while ((SECONDS < deadline)); do
+            sleep "$POLL_INTERVAL_IN_SECONDS"
+            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2> /dev/null || echo Pending)"
+            case "$status" in
+              Success | Failed | Cancelled | TimedOut) break ;;
+            esac
+          done
+
+          invocation="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --output json || echo '{}')"
+          echo "::group::Release stdout"
+          jq -r '.StandardOutputContent // ""' <<< "$invocation"
+          echo "::endgroup::"
+          echo "::group::Release stderr"
+          jq -r '.StandardErrorContent // ""' <<< "$invocation"
+          echo "::endgroup::"
+
+          if [[ "$status" != Success ]]; then
+            echo "::error::The release on the instance ended as ${status}"
+            exit 1
+          fi
+      - name: Check the app from the internet
+        run: |
+          # The first deploy may still be getting its certificate, so the health check retries
+          deadline=$((SECONDS + HEALTH_CHECK_DEADLINE_IN_SECONDS))
+          until curl -fsS -o /dev/null --max-time 10 "https://${APP_DOMAIN}/api/health"; do
+            if ((SECONDS >= deadline)); then
+              echo "::error::/api/health did not answer 200 within ${HEALTH_CHECK_DEADLINE_IN_SECONDS}s"
+              exit 1
+            fi
+            sleep "$POLL_INTERVAL_IN_SECONDS"
+          done
+
+          status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://${APP_DOMAIN}/")"
+          if [[ "$status" != 401 ]]; then
+            echo "::error::The app page answered ${status} without credentials, expected 401"
+            exit 1
+          fi
+          echo "Deployed ${GITHUB_SHA}: /api/health answers 200 and the app asks for credentials" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-skipped:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED != 'true'
+    needs: [backend, frontend, infra, e2e, release-drill]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Note that publish and deploy were skipped
+        run: echo "Publish and deploy were skipped because the repository variable DEPLOY_ENABLED is not set to true." >> "$GITHUB_STEP_SUMMARY"
