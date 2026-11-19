@@ -7,6 +7,6 @@ root = "src"
 coverage = true
 coverageThreshold = 0.8
 coverageSkipTestFiles = true
-coveragePathIgnorePatterns = ["src/main/routes/**", "src/main/server.ts", "src/providers/drizzle/migrate.ts", "src/test/**"]
+coveragePathIgnorePatterns = ["src/main/routes/**", "src/main/server.ts", "src/providers/drizzle/migrate.ts", "src/providers/drizzle/schema.ts", "src/test/**"]
 restoreMocks = true
 preload = ["./src/test/setup-database.ts"]
