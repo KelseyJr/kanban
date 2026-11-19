@@ -71,15 +71,17 @@ unset BASIC_AUTH_PASSWORD
 
 ### Repository variables
 
-The pipeline reads the Terraform outputs as repository variables. They are identifiers, not secrets: the role only trusts runs on `main` of this repository.
+The pipeline reads the Terraform outputs as repository variables. They are identifiers, not secrets: the role only trusts runs on `main` of this repository. The exception is `APP_DOMAIN`, a repository secret: the domain carries the instance IP, and only secrets are masked in the logs, which are public in this repository.
 
 ```bash
 cd infra/terraform
-for output in aws_region aws_role_arn ecr_registry releases_bucket instance_id app_domain; do
+for output in aws_region aws_role_arn ecr_registry releases_bucket instance_id; do
   gh variable set "$(echo "$output" | tr '[:lower:]' '[:upper:]')" --body "$(terraform output -raw "$output")"
 done
+gh secret set APP_DOMAIN --body "$(terraform output -raw app_domain)"
 gh variable set DEPLOY_ENABLED --body true
-gh variable list   # AWS_REGION, AWS_ROLE_ARN, ECR_REGISTRY, RELEASES_BUCKET, INSTANCE_ID, APP_DOMAIN, DEPLOY_ENABLED
+gh variable list   # AWS_REGION, AWS_ROLE_ARN, ECR_REGISTRY, RELEASES_BUCKET, INSTANCE_ID, DEPLOY_ENABLED
+gh secret list     # APP_DOMAIN
 ```
 
 `DEPLOY_ENABLED` is the switch: unless it is `true`, the pipeline on `main` runs every check and then only notes in the run summary that publish and deploy were skipped. Set it to `false` (or delete it) before `terraform destroy`, so `main` stays green without the infra.
@@ -123,7 +125,7 @@ This deletes the instance, its disk (and the database with it), the Elastic IP, 
 
 ### Optional hardening
 
-On a GitHub plan that allows it for private repositories:
+Both are free on a public repository:
 
 - **Protect `main`**: require the pipeline's checks (`backend`, `frontend`, `infra`, `e2e`, `release-drill`) before merging.
 - **A `production` environment with required reviewers**: add `environment: production` to the `publish` and `deploy` jobs, and change the trust of the deploy role to `sub = repo:<owner>/<repo>:environment:production` in `terraform/github-oidc.tf`. Each deploy then waits for an approval.

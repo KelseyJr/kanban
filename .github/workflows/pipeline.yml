@@ -232,17 +232,13 @@ jobs:
       RELEASES_BUCKET: ${{ vars.RELEASES_BUCKET }}
       INSTANCE_ID: ${{ vars.INSTANCE_ID }}
       ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+      # A secret, so GitHub masks it: the domain carries the instance IP, and the logs of this repository are public
+      APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
       COMMAND_TIMEOUT_IN_SECONDS: 600
       POLL_INTERVAL_IN_SECONDS: 5
       HEALTH_CHECK_DEADLINE_IN_SECONDS: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Mask the app domain
-        run: |
-          echo "::add-mask::${APP_DOMAIN}"
-          echo "APP_DOMAIN=${APP_DOMAIN}" >> "$GITHUB_ENV"
-        env:
-          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}

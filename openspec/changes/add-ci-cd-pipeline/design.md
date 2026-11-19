@@ -6,7 +6,7 @@
 - **PR #1** (branch `infra/aws-ec2-deploy`, fechado sem merge) já tem o ponto de partida: Dockerfiles dos dois apps (`oven/bun:1.4.4-alpine`, usuário sem root, o backend aplica as migrações antes de subir), `infra/docker-compose.prod.yml` (Postgres, backend, frontend em `vite preview`, Caddy `2.10.2`), Terraform (EC2 `t4g.small` arm64, Elastic IP, security group, key pair, user-data que instala o Docker) e um `deploy.sh` que faz rsync do repositório e constrói as imagens na instância.
 - **Frontend**: o Vite embute `VITE_API_URL` no build. `src/config/env.ts` valida essa variável quando o módulo carrega, e `src/services/api.client.ts` prefixa com ela toda requisição, tanto no SSR quanto no browser. O Vitest roda sem o compilador do TanStack Start, define `VITE_API_URL=http://api.test`, e os specs comparam URLs com esse prefixo.
 - **Backend**: responde `GET /health` e exige `CORS_ORIGIN` no ambiente. As migrações rodam por `src/providers/drizzle/migrate.ts`.
-- **Repositório**: privado, com `release` como branch padrão e sem `main`. O plano do GitHub é desconhecido: em repositório privado, Environments e proteção de branch dependem de plano pago.
+- **Repositório**: público (era privado quando a change foi escrita), com `release` como branch padrão e sem `main`. Os logs do Actions ficam visíveis para qualquer pessoa.
 - **Decisões tomadas com o usuário**: EC2 com OIDC, SSM e ECR; `main` como branch padrão; API na mesma origem, com a URL do SSR lida em runtime; basic auth no Caddy. A motivação está em `proposal.md`; os requisitos, em `specs/`.
 
 ## Goals / Non-Goals
@@ -115,7 +115,7 @@
 
 ### D7. Instância ARM64 (Graviton) e runners ARM64
 
-`t4g.small` com a AMI arm64 do Ubuntu 24.04, como no PR #1. Entre as opções de 64 bits com 2 vCPUs e 2 GB, é a mais barata: cerca de US$ 1,50 por mês a menos que a `t3a.small` (x86-64), on-demand em us-east-1. Os jobs que constroem ou executam as imagens usam o runner `ubuntu-24.04-arm`, que a documentação do GitHub oferece para repositório privado (2 CPUs, 8 GB). Assim a imagem roda nativamente nos testes e é a mesma que sobe na instância.
+`t4g.small` com a AMI arm64 do Ubuntu 24.04, como no PR #1. Entre as opções de 64 bits com 2 vCPUs e 2 GB, é a mais barata: cerca de US$ 1,50 por mês a menos que a `t3a.small` (x86-64), on-demand em us-east-1. Os jobs que constroem ou executam as imagens usam o runner `ubuntu-24.04-arm`, gratuito em repositório público (2 CPUs, 8 GB). Assim a imagem roda nativamente nos testes e é a mesma que sobe na instância.
 
 - A arquitetura da AMI é derivada do `instance_type` (`data.aws_ec2_instance_type`), então o tipo da instância é a única variável do Terraform que define a arquitetura.
 - **Fallback**: se o repositório recusar o rótulo `ubuntu-24.04-arm`, ou se os minutos ARM pesarem na franquia do plano, usar `t3a.small` (x86-64), `runs-on: ubuntu-latest` nos três jobs e a plataforma `linux/amd64`. A decisão precisa vir antes do primeiro `terraform apply`: o Terraform ignora mudanças de AMI, então trocar de arquitetura depois recria a instância e apaga o banco.
@@ -171,7 +171,7 @@ O ponto de partida é `infra/terraform/` do PR #1, com estes recursos novos ou a
 | Role `kanban-github-deploy`                                    | Confia só em `aud = sts.amazonaws.com` e `sub = repo:<owner>/<repo>:ref:refs/heads/main`. Pode fazer push e `DescribeImages` nos dois repositórios, `GetAuthorizationToken`, `s3:PutObject` em `releases/*`, `ssm:SendCommand` na instância e no documento `AWS-RunShellScript`, e `ssm:GetCommandInvocation` |
 | `user-data.sh`                                                 | Docker e o plugin Compose v2 (pacotes do Ubuntu) e AWS CLI v2. O agente do SSM já vem na AMI do Ubuntu. A swap do PR #1 sai, porque a instância não constrói mais imagens |
 
-- As saídas do Terraform viram variáveis do repositório no GitHub: `AWS_REGION`, `AWS_ROLE_ARN`, `ECR_REGISTRY`, `RELEASES_BUCKET`, `INSTANCE_ID` e `APP_DOMAIN`, além de `DEPLOY_ENABLED`, definida à mão. São identificadores, não segredos, e o README traz os comandos `gh variable set`. O job de deploy mascara `APP_DOMAIN` nos logs, porque o domínio contém o IP.
+- As saídas do Terraform viram variáveis do repositório no GitHub: `AWS_REGION`, `AWS_ROLE_ARN`, `ECR_REGISTRY`, `RELEASES_BUCKET` e `INSTANCE_ID`, além de `DEPLOY_ENABLED`, definida à mão. São identificadores, não segredos, e o README traz os comandos `gh variable set`. A exceção é `APP_DOMAIN`, gravado como secret do repositório (`gh secret set`): o domínio contém o IP, os logs são públicos e o GitHub só mascara secrets. Uma variável mascarada com `::add-mask::` ainda apareceria no cabeçalho de `env` do passo que registra a máscara.
 - O estado do Terraform continua local e fora do git, como no PR #1. `.terraform.lock.hcl` vai para o git.
 - **Sem Environments do GitHub**: em repositório privado, eles dependem de plano pago. Restringir o `sub` do OIDC à `main` dá a mesma garantia de "só a `main` implanta" em qualquer plano. Se o plano permitir, o reforço opcional é um environment `production` com revisão obrigatória, trocando o `sub` para `repo:<owner>/<repo>:environment:production`. O README descreve esse caminho.
 
@@ -209,7 +209,7 @@ A `release` é renomeada para `main` pela API do GitHub (`gh api -X POST repos/<
 - [Trust do OIDC amplo demais] → `sub` restrito à `main` deste repositório, permissões só nos recursos do projeto e nenhuma credencial guardada no GitHub.
 - [`docker compose up --wait` numa versão antiga do Compose] → O Ubuntu 24.04 traz Compose v2 com `--wait` e `--wait-timeout`. A versão é conferida na primeira subida, e o README a registra.
 - [`process.env` substituído no build do SSR] Se o Vite trocar a leitura por um valor fixo, a imagem perde a configuração em runtime. → O E2E em modo `stack` sobe a imagem com uma `API_URL` diferente da de dev e falha se isso acontecer.
-- [Logs públicos se o repositório virar público] → `APP_DOMAIN` mascarado. Os outros valores são identificadores sem poder sozinhos.
+- [Logs públicos] → `APP_DOMAIN` é secret, mascarado pelo GitHub. Os outros valores são identificadores sem poder sozinhos, e PRs vindos de forks não recebem secrets nem token OIDC.
 
 ## Migration Plan
 
