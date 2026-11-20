@@ -51,6 +51,8 @@ data "aws_iam_policy_document" "github_publish" {
     sid = "EcrPush"
     actions = [
       "ecr:BatchCheckLayerAvailability",
+      # docker push reads the manifest back (HEAD) after uploading it
+      "ecr:BatchGetImage",
       "ecr:CompleteLayerUpload",
       "ecr:DescribeImages",
       "ecr:InitiateLayerUpload",
