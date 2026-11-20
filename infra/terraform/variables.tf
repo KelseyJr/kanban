@@ -21,12 +21,12 @@ variable "ssh_allowed_cidr" {
   type        = string
 }
 
-variable "github_repository" {
-  description = "GitHub repository allowed to deploy, as owner/name; only runs on its main branch can assume the deploy role"
+variable "github_oidc_subject_prefix" {
+  description = "Start of the sub claim GitHub puts in this repository's OIDC tokens: repo:owner/name, or repo:owner@owner_id/name@repository_id when the repository uses immutable subjects (read it with: gh api repos/OWNER/NAME/actions/oidc/customization/sub --jq .sub_claim_prefix)"
   type        = string
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
-    error_message = "Use the owner/name form, such as octo-org/kanban."
+    condition     = can(regex("^repo:[A-Za-z0-9_.-]+(@[0-9]+)?/[A-Za-z0-9_.-]+(@[0-9]+)?$", var.github_oidc_subject_prefix))
+    error_message = "Use the sub_claim_prefix GitHub reports, such as repo:octo-org/kanban or repo:octo-org@123/kanban@456."
   }
 }

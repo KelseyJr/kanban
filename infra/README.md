@@ -42,7 +42,8 @@ Roughly US$ 0.024/hour, about US$ 17.5/month if left running, in us-east-1 on de
 ```bash
 cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars   # set ssh_allowed_cidr to "$(curl -s https://checkip.amazonaws.com)/32"
-                                               # and github_repository to the owner/name of this repository
+                                               # and github_oidc_subject_prefix to the output of
+                                               # gh api repos/OWNER/NAME/actions/oidc/customization/sub --jq .sub_claim_prefix
 terraform init
 terraform plan
 terraform apply
