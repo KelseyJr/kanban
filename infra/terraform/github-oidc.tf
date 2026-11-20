@@ -1,8 +1,8 @@
 locals {
   github_oidc_host = "token.actions.githubusercontent.com"
   # publish runs on pushes to main; deploy runs in the production environment, which asks for an approval first
-  github_publish_subject = "repo:${var.github_repository}:ref:refs/heads/main"
-  github_deploy_subject  = "repo:${var.github_repository}:environment:production"
+  github_publish_subject = "${var.github_oidc_subject_prefix}:ref:refs/heads/main"
+  github_deploy_subject  = "${var.github_oidc_subject_prefix}:environment:production"
 }
 
 # One per AWS account: if the account already has it, import it (see infra/README.md)
