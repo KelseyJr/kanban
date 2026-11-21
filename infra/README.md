@@ -20,14 +20,14 @@ Internet ──► Elastic IP ──► EC2 t4g.small (Ubuntu 24.04, arm64)
                                    └─ postgres (volume postgres-data, no published port)
 ```
 
-- `terraform/` creates everything on AWS: key pair, security group (22 from your IP only, 80 and 443 open), instance with its IAM role, Elastic IP, the two ECR repositories, the releases bucket, the GitHub OIDC provider, the publish role and the deploy role.
+- `terraform/` creates everything on AWS: key pair, security group (22 from your IP only, 80 and 443 open), instance with its IAM role, Elastic IP, the two ECR repositories, the releases bucket, the GitHub OIDC provider, the publish role and the deploy role, and the daily backup of the disk (a DLM policy, its role, and an alarm that emails `alert_email` when a day passes without a snapshot).
 - [sslip.io](https://sslip.io) turns the IP into a hostname (`kanban.1-2-3-4.sslip.io` → `1.2.3.4`), so no domain is needed and Caddy still gets a real certificate.
 - The pipeline builds the images once, tests them, then pushes those same images to ECR. The instance pulls them with its own role: no registry token and no AWS key live on GitHub or on the instance.
 - The backend container applies pending migrations before it starts serving. `POSTGRES_PASSWORD` is generated on the first deploy and kept in `/opt/kanban/.env` on the instance.
 
 ## Cost
 
-Roughly US$ 0.024/hour, about US$ 17.5/month if left running, in us-east-1 on demand: the `t4g.small` (about US$ 12.3), its public IPv4 (about US$ 3.7) and 20 GB of gp3 (about US$ 1.6). ECR (ten images per repository) and S3 (release bundles, expired after 30 days) add cents. Check current prices in the AWS pricing pages. `terraform destroy` stops all charges.
+Roughly US$ 0.024/hour, about US$ 17.5/month if left running, in us-east-1 on demand: the `t4g.small` (about US$ 12.3), its public IPv4 (about US$ 3.7) and 20 GB of gp3 (about US$ 1.6). ECR (ten images per repository), S3 (release bundles, expired after 30 days) and the seven daily snapshots of the disk (incremental, about US$ 0.05 per GB-month of used space) add cents. Check current prices in the AWS pricing pages. `terraform destroy` stops all charges.
 
 ## Prerequisites
 
@@ -48,6 +48,8 @@ terraform init
 terraform plan
 terraform apply
 ```
+
+`terraform.tfvars` also takes `alert_email`. After the apply, SNS sends that address a confirmation email: until you open its link, the backup alarm emails nobody. The alarm is in ALARM until the first daily snapshot (06:00 UTC), then turns OK.
 
 The instance type decides the architecture of the AMI (`t4g.*` is arm64, `t3a.*` is amd64), and it has to match the platform the pipeline builds (`linux/arm64` on `ubuntu-24.04-arm` runners). Settle it before the first deploy: Terraform ignores AMI changes, so switching architecture later means recreating the instance, and the database with it.
 
@@ -104,6 +106,27 @@ sudo cat /opt/kanban/current-release                 # the release being served 
 
 SSH still works from `ssh_allowed_cidr`: `ssh ubuntu@$(terraform -chdir=infra/terraform output -raw public_ip)`. If your IP changes, update `ssh_allowed_cidr` and run `terraform apply` again.
 
+- **Restore the database from a snapshot**: DLM snapshots the disk every day at 06:00 UTC and keeps the last seven (`aws ec2 describe-snapshots --owner-ids self --filters Name=tag:Name,Values=kanban-daily`). A snapshot restores into a new volume, never over the current disk. Create the volume in the instance's availability zone and attach it as a second disk, then copy the data back over Session Manager:
+
+  ```bash
+  INSTANCE_ID="$(terraform -chdir=infra/terraform output -raw instance_id)"
+  ZONE="$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].Placement.AvailabilityZone' --output text)"
+  VOLUME_ID="$(aws ec2 create-volume --snapshot-id <snapshot id> --availability-zone "$ZONE" --volume-type gp3 --query VolumeId --output text)"
+  aws ec2 wait volume-available --volume-ids "$VOLUME_ID"
+  aws ec2 attach-volume --volume-id "$VOLUME_ID" --instance-id "$INSTANCE_ID" --device /dev/sdf
+  ```
+
+  On the instance, the restored disk is the second NVMe device (`lsblk`). Mount it, start a throwaway Postgres on the snapshot's data, and copy back what was lost (one table here; drop `-t cards` for the whole database):
+
+  ```bash
+  sudo mkdir -p /mnt/restored && sudo mount /dev/nvme1n1p1 /mnt/restored
+  sudo docker run -d --name postgres-restored -e POSTGRES_PASSWORD=unused \
+    -v /mnt/restored/var/lib/docker/volumes/kanban_postgres-data/_data:/var/lib/postgresql postgres:18.7-alpine
+  sudo docker exec postgres-restored pg_dump -U kanban -d kanban -t cards --clean | sudo docker exec -i kanban-postgres-1 psql -U kanban -d kanban
+  sudo docker rm -f postgres-restored && sudo umount /mnt/restored
+  ```
+
+  Then detach and delete the volume: `aws ec2 detach-volume --volume-id "$VOLUME_ID"`, `aws ec2 wait volume-available --volume-ids "$VOLUME_ID"`, `aws ec2 delete-volume --volume-id "$VOLUME_ID"`.
 - **Change the password**: run the two `put-parameter` commands of "Basic auth credentials" again, then re-run the latest `deploy` job on `main` (or push a commit). The new password works from that deploy on, and the old one gets 401.
 - **Roll back by hand**: in GitHub Actions, open the run of an earlier commit on `main` and re-run its `deploy` job. It redeploys that commit's images, still in ECR (the last ten per repository). To go forward again, re-run the latest `deploy`.
 - **Stop deploying**: `gh variable set DEPLOY_ENABLED --body false`.
@@ -115,12 +138,12 @@ gh variable set DEPLOY_ENABLED --body false
 cd infra/terraform && terraform destroy
 ```
 
-This deletes the instance, its disk (and the database with it), the Elastic IP, the security group, the key pair, both ECR repositories with their images, the releases bucket, the IAM roles and the OIDC provider (if another project uses it, remove it from the state first with `terraform state rm aws_iam_openid_connect_provider.github`). The basic auth parameters were created by hand: delete them with `aws ssm delete-parameters --names /kanban/basic-auth/user /kanban/basic-auth/hash`. Afterwards, check the EC2 console of the region for leftovers.
+This deletes the instance, its disk (and the database with it), the Elastic IP, the security group, the key pair, both ECR repositories with their images, the releases bucket, the IAM roles and the OIDC provider (if another project uses it, remove it from the state first with `terraform state rm aws_iam_openid_connect_provider.github`). The basic auth parameters were created by hand: delete them with `aws ssm delete-parameters --names /kanban/basic-auth/user /kanban/basic-auth/hash`. The daily snapshots are not in the Terraform state, so they outlive the destroy and keep the database: restore one into a new instance's disk as in "Restore the database from a snapshot", or delete them when the data is no longer needed (`aws ec2 describe-snapshots --owner-ids self --filters Name=tag:Name,Values=kanban-daily --query 'Snapshots[].SnapshotId' --output text`, then `aws ec2 delete-snapshot --snapshot-id` for each). Afterwards, check the EC2 console of the region for leftovers.
 
 ## Known limits
 
 - **`vite preview` serves the SSR in production.** It was not made for that; a dedicated Bun server is left for another change.
-- **One instance, database on its disk, no backup.** `terraform destroy`, or losing the disk, loses the data.
+- **One instance, database on its disk, backed up once a day.** A restore brings back the disk as it was at the last 06:00 UTC snapshot: what changed after it is lost. Point-in-time recovery (RDS, or Postgres WAL archiving) would close that gap.
 - **A few seconds of 502 on each deploy**, while Compose recreates the containers.
 - **Rollback restores images, not the schema**: migrations only add (see "Migrations only add").
 - **Let's Encrypt rate limits on `sslip.io`**: certificates live in the `caddy-data` volume and survive deploys. If the limit is hit, point Caddy at the staging CA (`acme_ca https://acme-staging-v02.api.letsencrypt.org/directory` in a global options block of the Caddyfile) until it resets.

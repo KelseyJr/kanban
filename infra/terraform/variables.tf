@@ -30,3 +30,13 @@ variable "github_oidc_subject_prefix" {
     error_message = "Use the sub_claim_prefix GitHub reports, such as repo:octo-org/kanban or repo:octo-org@123/kanban@456."
   }
 }
+
+variable "alert_email" {
+  description = "Email that gets the backup alarm (no snapshot of the disk in the last day); SNS sends a confirmation link to it after apply"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alert_email))
+    error_message = "Use a full email address, such as you@example.com."
+  }
+}

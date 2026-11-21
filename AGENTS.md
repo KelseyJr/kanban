@@ -19,7 +19,7 @@ Kanban app split into two independent apps, `backend/` and `frontend/`, that tal
 ├── docker/                   create-databases.sql (kanban_test, kanban_e2e)
 ├── docker-compose.yml        Postgres 18 for dev, tests and E2E
 ├── infra/                    AWS deployment, operated through infra/README.md
-│   ├── terraform/            EC2 (t4g.small) + Elastic IP, ECR repositories, releases bucket, GitHub OIDC publish and deploy roles; state stays local and out of git
+│   ├── terraform/            EC2 (t4g.small) + Elastic IP, ECR repositories, releases bucket, GitHub OIDC publish and deploy roles, daily disk snapshots (DLM) with an alarm when one is missing; state stays local and out of git
 │   ├── release/              bundle each deploy sends to the instance: production compose, Caddyfile, apply-release.sh (+ its drill, apply-release.spec.sh), run-release.sh
 │   └── docker-compose.e2e.yml  override that publishes the backend on 3334 for the E2E suite in stack mode
 ├── playwright.config.ts      starts the backend (port 3334, database kanban_e2e) and the frontend (port 3001), then runs e2e/

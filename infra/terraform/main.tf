@@ -63,6 +63,11 @@ resource "aws_instance" "kanban" {
   root_block_device {
     volume_type = "gp3"
     volume_size = 20
+
+    tags = {
+      Name                   = "kanban"
+      (local.backup_tag.key) = local.backup_tag.value
+    }
   }
 
   metadata_options {
