@@ -45,6 +45,7 @@ main() {
   export APP_SITE="${APP_DOMAIN}"
   export APP_URL="https://${APP_DOMAIN}"
   export STATE_DIR
+  export COMPOSE_OVERRIDE_FILE="${BUNDLE_DIR}/docker-compose.aws-logs.yml"
   # The instance runs nothing but this stack, so every unused image is safe to remove
   export PRUNE_IMAGES=true
 

@@ -1,0 +1,15 @@
+# Production only, added by run-release.sh: ships every container's output to CloudWatch Logs.
+# Docker keeps a local copy too (dual logging), so `docker logs` and the failure details of apply-release.sh still work.
+x-cloudwatch-logging: &cloudwatch-logging
+  logging:
+    driver: awslogs
+    options:
+      awslogs-region: ${AWS_REGION:?set AWS_REGION}
+      awslogs-group: /kanban/app
+      tag: "{{.Name}}/{{.ID}}"
+
+services:
+  postgres: *cloudwatch-logging
+  backend: *cloudwatch-logging
+  frontend: *cloudwatch-logging
+  caddy: *cloudwatch-logging
