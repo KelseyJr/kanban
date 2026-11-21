@@ -1,3 +1,7 @@
+locals {
+  kanban_parameters_arn = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/kanban/*"
+}
+
 data "aws_iam_policy_document" "instance_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -54,7 +58,15 @@ data "aws_iam_policy_document" "instance_release" {
   statement {
     sid       = "BasicAuthParameters"
     actions   = ["ssm:GetParameter"]
-    resources = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/kanban/*"]
+    resources = [local.kanban_parameters_arn]
+  }
+
+  statement {
+    sid = "DenyParametersOutsideKanban"
+    # AmazonSSMManagedInstanceCore allows these reads on every parameter; an explicit Deny is the only way to narrow it
+    effect        = "Deny"
+    actions       = ["ssm:GetParameter", "ssm:GetParameters"]
+    not_resources = [local.kanban_parameters_arn]
   }
 }
 
