@@ -102,6 +102,14 @@ sudo docker logs -f kanban-backend-1
 sudo cat /opt/kanban/current-release                 # the release being served (the hash is in it: don't paste it around)
 ```
 
+The containers' output also goes to CloudWatch Logs, in the log group `/kanban/app` (one stream per container, `kanban-<service>-1/<container id>`, kept 14 days), so it survives a new instance and needs no session:
+
+```bash
+aws logs tail /kanban/app --follow                                   # every container
+aws logs tail /kanban/app --follow --log-stream-name-prefix kanban-backend-1
+aws logs filter-log-events --log-group-name /kanban/app --filter-pattern '{ $.level >= 50 }'   # backend errors (pino level 50+)
+```
+
 SSH still works from `ssh_allowed_cidr`: `ssh ubuntu@$(terraform -chdir=infra/terraform output -raw public_ip)`. If your IP changes, update `ssh_allowed_cidr` and run `terraform apply` again.
 
 - **Change the password**: run the two `put-parameter` commands of "Basic auth credentials" again, then re-run the latest `deploy` job on `main` (or push a commit). The new password works from that deploy on, and the old one gets 401.
@@ -193,7 +201,8 @@ Both are free on a public repository, and both already exist on this one. To rec
 | `docker-compose.yml`    | Postgres (volume, no published port), backend, frontend and Caddy. Images and ports come from variables; the project name is fixed (`kanban`), so the volumes outlive every release |
 | `Caddyfile`             | One host: basic auth on everything but `/api/health`, `/api/*` to the backend without the prefix, the rest to the frontend |
 | `apply-release.sh`      | Applies a release without talking to AWS; on failure, brings the previous release back and exits with 1  |
-| `run-release.sh`        | Instance only: logs in to ECR, reads the basic auth parameters, then calls `apply-release.sh`             |
+| `run-release.sh`        | Instance only: logs in to ECR, reads the basic auth parameters, then calls `apply-release.sh` with `docker-compose.aws-logs.yml` as the override |
+| `docker-compose.aws-logs.yml` | Instance only: sends every container's output to the CloudWatch log group `/kanban/app` (awslogs driver). Docker keeps a local copy, so `docker logs` still works. CI and local runs leave it out, since they have no AWS |
 | `apply-release.spec.sh` | The release drill: a good release, a broken one, and the checks that the rollback worked                 |
 
 `infra/docker-compose.e2e.yml` is an override for the E2E suite: it publishes the backend on port 3334, where the Playwright `api` project and fixtures reach it.
